@@ -17,7 +17,7 @@ def parse_channel_id(env_var: str, default: str) -> int:
         return int(default)
 
 # Canal de prédiction
-PREDICTION_CHANNEL_ID = parse_channel_id('PREDICTION_CHANNEL_ID', '-1003416207527')
+PREDICTION_CHANNEL_ID = parse_channel_id('PREDICTION_CHANNEL_ID', '-1002716137113)
 
 # Authentification
 ADMIN_ID = int(os.getenv('ADMIN_ID') or '0')
