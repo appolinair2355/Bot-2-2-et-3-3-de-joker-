@@ -69,6 +69,9 @@ finished_processed_games: set = set()
 # Jeux pour lesquels l'absence 2/2 a déjà été comptée en anticipé (joueur a 3 cartes)
 early_22_processed_games: set = set()
 
+# Jeux pour lesquels le seuil B a été atteint en anticipé (prédiction en attente de fin de jeu)
+early_22_threshold_reached: set = set()
+
 # Jeux pour lesquels la vérification 3/3 a déjà été faite en anticipé (3 cartes chacun)
 early_33_verified_games: set = set()
 
@@ -148,13 +151,25 @@ def update_prediction_history_status(pred_game: int, status: str):
 
 def build_prediction_msg(pred_game: int, dist: str, result_line: str) -> str:
     label = dist_label(dist)
-    return (
-        f"📱\U0001d514\U0001d52c\U0001d522\U0001d522\U0001d522\U0001d52f №{pred_game}\n"
-        f"⚜️\U0001d516\U0001d531\U0001d51e\U0001d531\U0001d532\U0001d531 {label} \n"
+    # Line 1 : 📱𝔍𝔬𝔲𝔢𝔲𝔯 №{pred_game}
+    line1 = f"📱\U0001d50d\U0001d52c\U0001d532\U0001d522\U0001d532\U0001d52f \u2116{pred_game}"
+    # Line 2 : different font per distribution
+    if dist == '2/2':
+        # Bold Fraktur "Statut" + space + label + space
+        line2 = f"⚜️\U0001d57e\U0001d599\U0001d586\U0001d599\U0001d59a\U0001d599 {label} "
+    else:
+        # Regular Fraktur "Statue" + label (no space)
+        line2 = f"⚜️\U0001d516\U0001d531\U0001d51e\U0001d531\U0001d532\U0001d522{label}"
+    # Line 3 : 🚦𝔓𝔬𝔲𝔯𝔰𝔲𝔦𝔱𝔢 𝔱𝔯𝔬𝔦𝔰 𝔧𝔢𝔲𝔵
+    line3 = (
         f"🚦\U0001d513\U0001d52c\U0001d532\U0001d52f\U0001d530\U0001d532\U0001d526\U0001d531\U0001d522 "
-        f"\U0001d531\U0001d52f\U0001d52c\U0001d526\U0001d530 \U0001d527\U0001d522\U0001d532\U0001d535\n"
-        f"🗯️ \U0001d411\u00e9\U0001d530\U0001d532\U0001d529\U0001d531\U0001d51e\U0001d531\U0001d530:{result_line}"
+        f"\U0001d531\U0001d52f\U0001d52c\U0001d526\U0001d530 \U0001d527\U0001d522\U0001d532\U0001d535"
     )
+    # Line 4 : 🗯️ 𝕽é𝖘𝖚𝖑𝖙𝖆𝖙𝖘:{result_line}  (Bold Fraktur)
+    line4 = (
+        f"🗯️ \U0001d57d\u00e9\U0001d598\U0001d59a\U0001d591\U0001d599\U0001d586\U0001d599\U0001d598:{result_line}"
+    )
+    return f"{line1}\n{line2}\n{line3}\n{line4}"
 
 async def send_prediction(pred_game: int, dist: str, triggered_at: int) -> Optional[int]:
     """Envoie une prédiction 2/2 ou 3/3 au canal."""
@@ -169,7 +184,7 @@ async def send_prediction(pred_game: int, dist: str, triggered_at: int) -> Optio
         logger.error(f"❌ Canal prédiction inaccessible: {PREDICTION_CHANNEL_ID}")
         return None
 
-    msg = build_prediction_msg(pred_game, dist, '⌛')
+    msg = build_prediction_msg(pred_game, dist, '⌛💡')
 
     try:
         sent = await client.send_message(prediction_entity, msg)
@@ -317,6 +332,8 @@ async def process_early_22(game_number: int):
 
     Appelé AVANT la fin du jeu — on sait déjà que ce jeu ne sera pas 2/2.
     Évite le double-comptage quand le jeu se termine ensuite.
+    La prédiction n'est PAS envoyée ici : elle sera envoyée seulement quand
+    le jeu sera officiellement terminé (dans process_compteur2).
     """
     global compteur2_abs_22, compteur2_last_game
 
@@ -331,20 +348,21 @@ async def process_early_22(game_number: int):
         oldest = min(early_22_processed_games)
         early_22_processed_games.discard(oldest)
 
-    pred_game = game_number + compteur2_t
-
     compteur2_abs_22 += 1
     logger.info(
         f"📊 [ANTICIPÉ] Compteur2 ❷/❷: absence {compteur2_abs_22}/{compteur2_b} "
-        f"(jeu #{game_number}, joueur a déjà 3 cartes → pas de 2/2)"
+        f"(jeu #{game_number}, joueur a déjà 3 cartes → pas de 2/2 — prédiction différée à la fin du jeu)"
     )
 
     if compteur2_abs_22 >= compteur2_b:
-        if attente_mode and attente_locked:
-            logger.info(f"🔒 Mode Attente: B atteint pour ❷/❷ → prédiction ignorée")
-        else:
-            logger.info(f"🔮 [ANTICIPÉ] Compteur2: ❷/❷ absent {compteur2_b}x → prédiction pour #{pred_game}")
-            await send_prediction(pred_game, '2/2', game_number)
+        # Mémoriser que le seuil est atteint — la prédiction sera envoyée à la fin du jeu
+        early_22_threshold_reached.add(game_number)
+        if len(early_22_threshold_reached) > 500:
+            early_22_threshold_reached.discard(min(early_22_threshold_reached))
+        logger.info(
+            f"🔮 [ANTICIPÉ] Compteur2: ❷/❷ absent {compteur2_b}x → "
+            f"prédiction en attente de la fin du jeu #{game_number}"
+        )
         compteur2_abs_22 = 0
 
 
@@ -390,10 +408,20 @@ async def process_compteur2(game_number: int, dist: Optional[str]):
                     await send_prediction(pred_game, '2/2', game_number)
                 compteur2_abs_22 = 0
     else:
-        # Déjà compté en anticipé — juste réinitialiser si c'était un 2/2 (rare, cas de correction API)
+        # Déjà compté en anticipé
         if dist == '2/2':
+            # Cas rare de correction API — le jeu était finalement 2/2 → annuler le seuil et reset
             logger.info(f"📊 Compteur2 ❷/❷: jeu #{game_number} anticipé mais finalement 2/2 → reset")
             compteur2_abs_22 = 0
+            early_22_threshold_reached.discard(game_number)
+        elif game_number in early_22_threshold_reached:
+            # Le seuil avait été atteint en anticipé — on envoie maintenant que le jeu est terminé
+            early_22_threshold_reached.discard(game_number)
+            if attente_mode and attente_locked:
+                logger.info(f"🔒 Mode Attente: B atteint pour ❷/❷ → prédiction ignorée")
+            else:
+                logger.info(f"🔮 Compteur2: ❷/❷ absent {compteur2_b}x → prédiction pour #{pred_game} (jeu terminé)")
+                await send_prediction(pred_game, '2/2', game_number)
 
     # ---------- 3/3 ----------
     if dist == '3/3':
@@ -486,6 +514,11 @@ async def api_polling_loop():
                     # 2. Compteur2 (la partie 2/2 saute si déjà comptée en anticipé)
                     await process_compteur2(game_number, dist)
 
+                    # 3. Reset automatique après la partie #1440
+                    if game_number == AUTO_RESET_GAME:
+                        logger.info(f"🔄 Partie #{AUTO_RESET_GAME} terminée → reset automatique")
+                        await perform_full_reset(f"Reset automatique après partie #{AUTO_RESET_GAME}")
+
                 # Nettoyage cache
                 if len(api_results_cache) > 300:
                     oldest = min(api_results_cache.keys())
@@ -502,24 +535,14 @@ async def api_polling_loop():
 # RESET AUTOMATIQUE
 # ============================================================================
 
-async def auto_reset_system():
-    while True:
-        try:
-            now = datetime.now()
-            if now.hour == 1 and now.minute == 0:
-                logger.info("🕐 Reset automatique 1h00")
-                await perform_full_reset("Reset automatique 1h00")
-                await asyncio.sleep(60)
-            await asyncio.sleep(30)
-        except Exception as e:
-            logger.error(f"❌ Erreur auto_reset: {e}")
-            await asyncio.sleep(60)
+# Numéro de partie déclenchant le reset automatique
+AUTO_RESET_GAME = 1440
 
 async def perform_full_reset(reason: str):
     global pending_predictions, last_prediction_time
     global compteur2_abs_22, compteur2_abs_33, compteur2_last_game
     global attente_locked, finished_processed_games, api_results_cache
-    global early_22_processed_games, early_33_verified_games
+    global early_22_processed_games, early_22_threshold_reached, early_33_verified_games
 
     stats = len(pending_predictions)
     pending_predictions.clear()
@@ -530,23 +553,11 @@ async def perform_full_reset(reason: str):
     attente_locked = False
     finished_processed_games = set()
     early_22_processed_games = set()
+    early_22_threshold_reached = set()
     early_33_verified_games = set()
     api_results_cache = {}
 
     logger.info(f"🔄 {reason} - {stats} prédictions cleared")
-
-    try:
-        prediction_entity = await resolve_channel(PREDICTION_CHANNEL_ID)
-        if prediction_entity and client and client.is_connected():
-            await client.send_message(
-                prediction_entity,
-                f"🔄 **RESET SYSTÈME**\n\n{reason}\n\n"
-                f"✅ Compteurs remis à zéro\n"
-                f"✅ {stats} prédictions cleared\n\n"
-                f"🎲𝐁𝐀𝐂𝐂𝐀𝐑𝐀 𝐏𝐑𝐄𝐌𝐈𝐔𝐌+2 ✨🎲"
-            )
-    except Exception as e:
-        logger.error(f"❌ Notif reset failed: {e}")
 
 # ============================================================================
 # COMMANDES ADMIN
@@ -555,7 +566,7 @@ async def perform_full_reset(reason: str):
 async def cmd_compteur2(event):
     global compteur2_active, compteur2_b, compteur2_b2, compteur2_t
     global compteur2_abs_22, compteur2_abs_33, finished_processed_games
-    global early_22_processed_games, early_33_verified_games
+    global early_22_processed_games, early_22_threshold_reached, early_33_verified_games
 
     if event.is_group or event.is_channel:
         return
@@ -577,6 +588,7 @@ async def cmd_compteur2(event):
         compteur2_abs_33 = 0
         finished_processed_games = set()
         early_22_processed_games = set()
+        early_22_threshold_reached = set()
         early_33_verified_games = set()
         await event.respond(f"✅ Compteur2 ACTIVÉ\n\n" + get_compteur2_status_text())
 
@@ -589,6 +601,7 @@ async def cmd_compteur2(event):
         compteur2_abs_33 = 0
         finished_processed_games = set()
         early_22_processed_games = set()
+        early_22_threshold_reached = set()
         early_33_verified_games = set()
         await event.respond("🔄 Compteur2 remis à zéro\n\n" + get_compteur2_status_text())
 
@@ -782,7 +795,7 @@ async def cmd_test(event):
             await event.respond(f"❌ Canal inaccessible `{PREDICTION_CHANNEL_ID}`")
             return
 
-        sent = await client.send_message(prediction_entity, build_prediction_msg(9999, '2/2', '⌛') + f"\n🕐 {datetime.now().strftime('%H:%M:%S')} [TEST]")
+        sent = await client.send_message(prediction_entity, build_prediction_msg(9999, '2/2', '⌛💡') + f"\n🕐 {datetime.now().strftime('%H:%M:%S')} [TEST]")
         await asyncio.sleep(2)
         await client.edit_message(prediction_entity, sent.id, build_prediction_msg(9999, '2/2', '✅0️⃣') + f"\n🕐 {datetime.now().strftime('%H:%M:%S')} [TEST]")
         await asyncio.sleep(2)
@@ -954,9 +967,8 @@ async def main():
         if not await start_bot():
             return
 
-        asyncio.create_task(auto_reset_system())
         asyncio.create_task(api_polling_loop())
-        logger.info("🔄 Auto-reset et polling API démarrés")
+        logger.info("🔄 Polling API démarré")
 
         app = web.Application()
         app.router.add_get('/health', lambda r: web.Response(text="OK"))
